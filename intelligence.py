@@ -1,28 +1,23 @@
 # intelligence.py
 # FULL MOVIE-LEVEL YouTube Intelligence Engine
-# Hourly automation | .env | Complete intelligence layers
+# Hourly automation | .env | Attack detection | Spike alerts
 
 from dotenv import load_dotenv
 load_dotenv()
 
-import os
-import time
-import json
+import os, time, json
 from collections import defaultdict, Counter
 from datetime import datetime
-
 from googleapiclient.discovery import build
 from transformers import pipeline
 from langdetect import detect
 from tqdm import tqdm
 
-# =====================================================
-# CONFIG
-# =====================================================
+# ================= CONFIG =================
 
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 if not YOUTUBE_API_KEY:
-    raise RuntimeError("YOUTUBE_API_KEY not found in .env")
+    raise RuntimeError("YOUTUBE_API_KEY missing in .env")
 
 SENTIMENT_MODEL = "tabularisai/multilingual-sentiment-analysis"
 MAX_VIDEOS = 300
@@ -39,39 +34,35 @@ VIDEO_CLASSIFIERS = {
     "Song": ["song", "lyrical", "audio", "music"],
     "Teaser": ["teaser"],
     "Trailer": ["trailer"],
-    "Interview": ["interview", "press meet", "interaction"],
-    "Review / Public Talk": ["review", "public talk", "response"]
+    "Interview": ["interview", "press", "meet"],
+    "Review / Public Talk": ["review", "public"]
 }
 
-NEGATIVE_CATEGORIES = {
-    "Routine Content": ["routine", "boring", "same"],
-    "Age / Relevance": ["old", "age", "outdated"],
-    "Director Criticism": ["ravipudi", "director"],
-    "Story Doubt": ["story", "script", "content"],
-    "PR Attack": ["pr", "paid", "fake hype"],
-    "Personal Attack": ["acting", "voice", "looks"]
-}
-
-# =====================================================
-# HELPERS
-# =====================================================
+# ================= HELPERS =================
 
 def normalize_sentiment(label):
     return "Positive" if "pos" in label.lower() else "Negative"
 
 def classify_video(title):
     t = title.lower()
-    for stage, keys in VIDEO_CLASSIFIERS.items():
-        if any(k in t for k in keys):
-            return stage
+    for k, v in VIDEO_CLASSIFIERS.items():
+        if any(x in t for x in v):
+            return k
     return "Other"
 
-def categorize_negative(text):
-    t = text.lower()
-    for cat, keys in NEGATIVE_CATEGORIES.items():
-        if any(k in t for k in keys):
-            return cat
-    return "General Negativity"
+def normalize_language(text):
+    try:
+        lang = detect(text)
+    except:
+        return "Unknown"
+
+    if lang in ["te"]:
+        return "Telugu"
+    if lang in ["en"]:
+        return "English"
+    if lang in ["hi"]:
+        return "Hindi"
+    return "Roman / Mixed"
 
 def get_youtube():
     return build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
@@ -79,9 +70,7 @@ def get_youtube():
 def load_sentiment():
     return pipeline("sentiment-analysis", model=SENTIMENT_MODEL)
 
-# =====================================================
-# VIDEO SEARCH
-# =====================================================
+# ================= VIDEO SEARCH =================
 
 def search_movie_videos(youtube):
     query = f"{MOVIE_NAME} {HERO} {DIRECTOR}"
@@ -113,9 +102,7 @@ def search_movie_videos(youtube):
 
     return list({v["video_id"]: v for v in videos}.values())
 
-# =====================================================
-# COMMENTS
-# =====================================================
+# ================= COMMENTS =================
 
 def fetch_comments(youtube, video):
     out = []
@@ -143,9 +130,40 @@ def fetch_comments(youtube, video):
         pass
     return out
 
-# =====================================================
-# MAIN ENGINE
-# =====================================================
+# ================= ATTACK DETECTION =================
+
+def detect_attack_coordination(user_map):
+    attackers = []
+    for user, rows in user_map.items():
+        neg = [r for r in rows if r["sentiment"] == "Negative"]
+        if len(neg) >= REPEAT_USER_THRESHOLD:
+            stages = set(r["video_type"] for r in neg)
+            if len(stages) >= 2:
+                attackers.append({
+                    "author": user,
+                    "negative_comments": len(neg),
+                    "stages_targeted": list(stages),
+                    "videos_targeted": len(set(r["video_title"] for r in neg))
+                })
+    return attackers
+
+def detect_spike(spikes):
+    if len(spikes) < 3:
+        return None
+    values = list(spikes.values())
+    avg = sum(values[:-1]) / max(1, len(values[:-1]))
+    last_key = list(spikes.keys())[-1]
+    last_val = spikes[last_key]
+    if last_val > avg * 2:
+        return {
+            "date": last_key,
+            "count": last_val,
+            "average": round(avg, 2),
+            "severity": "HIGH"
+        }
+    return None
+
+# ================= MAIN =================
 
 def run_intelligence():
     yt = get_youtube()
@@ -157,94 +175,50 @@ def run_intelligence():
     for v in videos:
         all_comments.extend(fetch_comments(yt, v))
 
-    results = []
-    video_map = defaultdict(list)
-    user_map = defaultdict(list)
-    language_map = defaultdict(lambda: {"Positive": 0, "Negative": 0})
-    stage_map = defaultdict(lambda: {"total": 0, "negative": 0})
-    category_map = Counter()
+    results, user_map = [], defaultdict(list)
+    stage_stats = defaultdict(lambda: {"total": 0, "negative": 0})
+    language_stats = defaultdict(lambda: {"total": 0, "negative": 0})
+    song_stats = defaultdict(lambda: {"total": 0, "negative": 0})
     spikes = Counter()
-    engagement = Counter()
 
-    for c in tqdm(all_comments, desc="Analyzing comments"):
+    for c in tqdm(all_comments, desc="Analyzing"):
         try:
             out = sentiment_model(c["comment"][:512])[0]
             sentiment = normalize_sentiment(out["label"])
-            language = detect(c["comment"])
+            language = normalize_language(c["comment"])
 
-            ts = datetime.fromisoformat(c["published_at"].replace("Z", "+00:00"))
-            hour_bucket = ts.strftime("%Y-%m-%d %H:00")
+            hour = datetime.fromisoformat(
+                c["published_at"].replace("Z", "+00:00")
+            ).strftime("%Y-%m-%d %H:00")
 
-            neg_cat = categorize_negative(c["comment"]) if sentiment == "Negative" else None
-
-            row = {
-                **c,
-                "sentiment": sentiment,
-                "language": language,
-                "negative_category": neg_cat,
-                "confidence": out["score"],
-                "hour_bucket": hour_bucket
-            }
-
+            row = {**c, "sentiment": sentiment, "language": language}
             results.append(row)
-            video_map[c["video_title"]].append(row)
             user_map[c["author"]].append(row)
-            engagement[c["video_title"]] += 1
-            language_map[language][sentiment] += 1
-            stage_map[c["video_type"]]["total"] += 1
+
+            stage_stats[c["video_type"]]["total"] += 1
+            language_stats[language]["total"] += 1
 
             if sentiment == "Negative":
-                stage_map[c["video_type"]]["negative"] += 1
-                category_map[neg_cat] += 1
-                spikes[hour_bucket] += 1
+                stage_stats[c["video_type"]]["negative"] += 1
+                language_stats[language]["negative"] += 1
+                spikes[hour] += 1
+                if c["video_type"] == "Song":
+                    song_stats[c["video_title"]]["negative"] += 1
+
+            if c["video_type"] == "Song":
+                song_stats[c["video_title"]]["total"] += 1
 
         except:
             pass
 
-    # ================= FLAGGED VIDEOS =================
-
-    flagged_videos = []
-    for title, rows in video_map.items():
-        neg = sum(1 for r in rows if r["sentiment"] == "Negative")
-        pct = round((neg / max(1, len(rows))) * 100, 2)
-        if pct >= NEGATIVE_VIDEO_THRESHOLD:
-            flagged_videos.append({
-                "video_title": title,
-                "video_type": rows[0]["video_type"],
-                "negative_percentage": pct,
-                "video_url": rows[0]["video_url"]
-            })
-
-    # ================= REPEAT USERS =================
-
-    repeat_users = {
-        u: v for u, v in user_map.items()
-        if sum(1 for x in v if x["sentiment"] == "Negative") >= REPEAT_USER_THRESHOLD
-    }
-
-    top_offenders = [
-        {
-            "author": u,
-            "negative_comments": sum(1 for x in v if x["sentiment"] == "Negative"),
-            "videos_targeted": len(set(x["video_title"] for x in v))
-        }
-        for u, v in repeat_users.items()
-    ]
-
-    # ================= KEY TAKEAWAYS =================
-
-    key_takeaways = [
-        f"{round((sum(1 for r in results if r['sentiment']=='Negative') / max(1,len(results))) * 100,2)}% of all mentions are negative",
-        f"{len(flagged_videos)} videos crossed negative threshold",
-        f"{len(repeat_users)} users show repeated negative behavior",
-        f"Highest negativity stage: {max(stage_map, key=lambda x: stage_map[x]['negative']/max(1,stage_map[x]['total']))}"
-    ]
+    attack_users = detect_attack_coordination(user_map)
+    spike_alert = detect_spike(spikes)
 
     output = {
+        "generated_at": datetime.utcnow().isoformat(),
         "movie": MOVIE_NAME,
         "hero": HERO,
         "director": DIRECTOR,
-        "generated_at": datetime.utcnow().isoformat(),
 
         "instances": {
             "total_mentions": len(results),
@@ -252,18 +226,13 @@ def run_intelligence():
         },
 
         "negative_spikes": dict(spikes),
-        "language_distribution": language_map,
-        "sentiment_by_stage": stage_map,
-        "negative_categories": dict(category_map),
-        "top_engaged_videos": engagement.most_common(10),
-
-        "flagged_negative_videos": flagged_videos,
-        "repeat_users": top_offenders,
-        "repeat_user_details": repeat_users,
-        "key_takeaways": key_takeaways,
-
-        "videos": videos,
-        "comments": results
+        "real_time_alert": spike_alert,
+        "sentiment_by_stage": stage_stats,
+        "language_distribution": language_stats,
+        "song_analysis": song_stats,
+        "attack_coordination": attack_users,
+        "comments": results,
+        "videos": videos
     }
 
     with open("latest_intelligence.json", "w", encoding="utf-8") as f:
@@ -273,4 +242,4 @@ def run_intelligence():
 
 if __name__ == "__main__":
     run_intelligence()
-    print("✅ Hourly intelligence updated")
+    print("✅ Intelligence updated")

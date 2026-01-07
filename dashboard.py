@@ -1,67 +1,63 @@
 # dashboard.py
-import json
-import streamlit as st
+import json, os
 import pandas as pd
+import streamlit as st
 import plotly.express as px
 
-st.set_page_config(page_title="Movie Intelligence", layout="wide")
+st.set_page_config("Movie Intelligence", "🎬", layout="wide")
+
+if not os.path.exists("latest_intelligence.json"):
+    st.error("No intelligence data found yet.")
+    st.stop()
 
 with open("latest_intelligence.json", "r", encoding="utf-8") as f:
     data = json.load(f)
 
-comments = pd.DataFrame(data["comments"])
+st.title(f"🎬 {data['movie']} — Intelligence Dashboard")
+st.caption(f"Hero: {data['hero']} | Director: {data['director']}")
 
-st.title(f"🎬 {data['movie']} – Intelligence Dashboard")
-st.caption(f"Hero: {data['hero']} | Director: {data['director']} | Updated: {data['generated_at']}")
+# 🚨 ALERT
+if data.get("real_time_alert"):
+    a = data["real_time_alert"]
+    st.error(f"🚨 NEGATIVITY SPIKE | {a['date']} | {a['count']} vs avg {a['average']}")
 
-# ================= KPIs =================
-k1, k2, k3, k4 = st.columns(4)
+# KPIs
+k1, k2, k3 = st.columns(3)
 k1.metric("Total Mentions", data["instances"]["total_mentions"])
 k2.metric("Negative Mentions", data["instances"]["negative_mentions"])
-k3.metric("Flagged Videos", len(data["flagged_negative_videos"]))
-k4.metric("Repeat Users", len(data["repeat_users"]))
+k3.metric("Coordinated Attackers", len(data["attack_coordination"]))
 
-st.divider()
+# Sentiment by Stage
+st.subheader("🎥 Sentiment by Movie Stage")
+stage_df = pd.DataFrame.from_dict(data["sentiment_by_stage"], orient="index")
+stage_df["negative_pct"] = (stage_df["negative"] / stage_df["total"] * 100).round(2)
+st.bar_chart(stage_df[["total", "negative_pct"]])
 
-# ================= FLAGGED VIDEOS =================
-st.subheader("🚨 Flagged Negative Uploads")
-st.dataframe(pd.DataFrame(data["flagged_negative_videos"]), use_container_width=True)
+# Song Analytics
+st.subheader("🎵 Song-wise Sentiment")
+song_df = pd.DataFrame.from_dict(data["song_analysis"], orient="index").fillna(0)
+song_df["negative_pct"] = (song_df["negative"] / song_df["total"] * 100).round(2)
+st.dataframe(song_df.sort_values("negative_pct", ascending=False))
 
-# ================= SPIKES =================
-st.subheader("📈 Negative Comment Spikes")
-spike_df = pd.DataFrame(data["negative_spikes"].items(), columns=["Hour","Count"])
-st.plotly_chart(px.line(spike_df, x="Hour", y="Count"), use_container_width=True)
-
-# ================= LANGUAGE =================
+# Language
 st.subheader("🌐 Language Distribution")
-lang_rows = []
-for l,v in data["language_distribution"].items():
-    total = v["Positive"] + v["Negative"]
-    lang_rows.append({"Language":l,"Negative %":round(v["Negative"]/max(1,total)*100,2)})
-st.plotly_chart(px.bar(pd.DataFrame(lang_rows), x="Language", y="Negative %"), use_container_width=True)
+lang_df = pd.DataFrame.from_dict(data["language_distribution"], orient="index")
+lang_df["negative_pct"] = (lang_df["negative"] / lang_df["total"] * 100).round(2)
+st.dataframe(lang_df)
 
-# ================= STAGE =================
-st.subheader("🎞 Sentiment by Movie Stage")
-stage_rows = []
-for s,v in data["sentiment_by_stage"].items():
-    stage_rows.append({"Stage":s,"Negative %":round(v["negative"]/max(1,v["total"])*100,2)})
-st.plotly_chart(px.bar(pd.DataFrame(stage_rows), x="Stage", y="Negative %"), use_container_width=True)
+# Attack Coordination
+st.subheader("🚨 Coordinated Attack Users")
+if data["attack_coordination"]:
+    st.dataframe(pd.DataFrame(data["attack_coordination"]))
+else:
+    st.success("No coordinated attack patterns detected")
 
-# ================= CATEGORIES =================
-st.subheader("🧨 Negative Comment Categories")
-st.plotly_chart(px.pie(pd.DataFrame(data["negative_categories"].items(), columns=["Category","Count"]),
-                       names="Category", values="Count"), use_container_width=True)
-
-# ================= OFFENDERS =================
-st.subheader("🕵️ Top Repeat Offenders")
-st.dataframe(pd.DataFrame(data["repeat_users"]), use_container_width=True)
-
-# ================= TAKEAWAYS =================
-st.subheader("📌 Key Takeaways")
-for t in data["key_takeaways"]:
-    st.write("•", t)
-
-# ================= COMMENTS =================
+# Evidence
 st.subheader("🧾 Comment Evidence")
-st.dataframe(comments[["author","sentiment","language","video_type","video_title","comment","video_url"]],
-             use_container_width=True)
+comments_df = pd.DataFrame(data["comments"])
+st.dataframe(
+    comments_df[
+        ["author", "sentiment", "language", "video_type", "video_title", "comment", "video_url"]
+    ],
+    use_container_width=True
+)
