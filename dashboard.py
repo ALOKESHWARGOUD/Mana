@@ -22,6 +22,25 @@ st.caption(
     f"Updated: {data.get('generated_at')}"
 )
 
+st.divider()
+
+# ================= RECENT NEGATIVE COMMENTS =================
+st.subheader("🚨 Recent Negative Comments (Flagged)")
+
+recent_negatives = data.get("recent_negative_comments", [])
+if recent_negatives:
+    df_recent = pd.DataFrame(recent_negatives)
+    st.dataframe(
+        df_recent[
+            ["author", "comment", "video_title", "video_type", "video_url", "published_at"]
+        ],
+        use_container_width=True
+    )
+else:
+    st.success("✅ No recent negative comments")
+
+st.divider()
+
 # ================= KPI =================
 k1, k2, k3 = st.columns(3)
 inst = data.get("instances", {})
